@@ -1,6 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.stats as stats
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.mixture import GaussianMixture
+
 
 _SIZE = 250
 _MEAN = 10
@@ -9,17 +13,25 @@ np.random.seed(42)
 data = np.random.normal(_MEAN, _STD, _SIZE)
 n = len(data)
 
-def is_normal(arr, alpha=.05):
-    results = stats.shapiro(arr)
-    pvalue = results.pvalue
-    print(f"p-value : {pvalue :.3g}")
-    return results.pvalue > alpha
+def _clean_data(data):
+	x = np.array(data).flatten()
+	return x[~np.isnan(x)]
+
+
+def is_normal(data, alpha=.05):
+	# Convert to numpy array and remove NaNs
+	x = _clean_data(data)
+	results = stats.shapiro(x)
+	pvalue = results.pvalue
+	print(f"p-value : {pvalue :.3g}")
+	return results.pvalue > alpha
 
 
 def global_outliers(data, need_formal=False):
-	method1, method2, mehtod3 = None, None, None
+	method1, method2, method3 = None, None, None
+	x = _clean_data(data)
 	if n < 30:
-		if is_normal(data):
+		if is_normal(x):
 			method1 = 'Dixon'
 			method2 = 'Grubb'
 		else:
@@ -27,37 +39,29 @@ def global_outliers(data, need_formal=False):
 			method2 = 'Percentile'
 
 	elif 30 <= n < 300:
-		if is_normal(data):
+		if is_normal(x):
 			if need_formal:
 				method1 = 'Grubb' if 'ONE_OUTLIER' else 'Generalized ESD'
 			else:
 				method1 = 'z-score'
-		skewness = stats.skew(data)
-    #     elif abs(skewness) >= 1:
-    #         method1 = 'Modified z-score'
-    #         method2 = 'Median +/- MAD'
-    #         method3 = 'Percentile:1-99'
-	# 	elif abs(skewness)< 0.5:
-	# 		mehtod1 = 'IQR'
-	# 		mehtod2 = 'Percentile:1-99'
-	# 	else:
-	# 		method1 = 'Modified z-score'
-	# 		mehtod2 = 'IQR'
-	# 		method3 = 'Percentile:5-95'
-	# else:
-	# 	method1 = 'IQR'
-	# 	method2 = None
+		elif abs(stats.skew(x)) >= 1:
+			method1 = 'Modified z-score'
+			method2 = 'Median +/- MAD'
+			method3 = 'Percentile:1-99'
 
+		elif abs(stats.skew(x))< 0.5:
+			method1 = 'IQR'
+			method2 = 'Percentile:1-99'
+		else:
+			method1 = 'Modified z-score'
+			method2 = 'IQR'
+			method3 = 'Percentile:5-95'
+	else:
+		method1 = 'IQR'
+		method2 = None
+	return method1, method2, method3
 
-if __name__ == '__main__':
-	# global_outliers(data)
-
-	import matplotlib.pyplot as plt
-	import seaborn as sns
-	from sklearn.mixture import GaussianMixture
-	from scipy import stats
-
-	def check_multimodality(x, max_components=5, alpha=0.05):
+def check_multimodality(data, max_components=5, alpha=0.05):
 		"""
 		Check for multimodality in a single numeric variable.
 		
@@ -76,18 +80,11 @@ if __name__ == '__main__':
 		--------
 		dict : Dictionary containing test results and diagnostics
 		"""
-		
-		# Convert to numpy array and remove NaNs
-		x = np.array(x).flatten()
-		x = x[~np.isnan(x)]
+
+		x = _clean_data(data)
 		n = len(x)
 		
-		# ========================================
-		# 2. GAUSSIAN MIXTURE MODEL (GMM) - BIC
-		# ========================================
-		print("-" * 60)
-		print("2. GAUSSIAN MIXTURE MODEL (BIC COMPARISON)")
-		print("-" * 60)
+		# GAUSSIAN MIXTURE MODEL (GMM) - BIC
 		
 		X = x.reshape(-1, 1)
 		bics = []
@@ -104,7 +101,10 @@ if __name__ == '__main__':
 		
 		best_k_bic = np.argmin(bics) + 1
 		best_k_aic = np.argmin(aics) + 1
-		
+	
+		print("-" * 60)
+		print("2. GAUSSIAN MIXTURE MODEL (BIC COMPARISON)")
+		print("-" * 60)
 		print(f"{'Components':<12} {'BIC':<15} {'AIC':<15}")
 		print("-" * 42)
 		for k in range(1, max_components + 1):
@@ -156,6 +156,11 @@ if __name__ == '__main__':
 		
 		return results
 
+
+if __name__ == '__main__':
+	# global_outliers(data)
+	global_outliers(data)
+	
 
 	# Example 2: Bimodal data
 	bimodal_data = np.concatenate([
