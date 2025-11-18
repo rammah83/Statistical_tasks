@@ -1,4 +1,6 @@
+from math import isfinite
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.stats as stats
 import seaborn as sns
@@ -18,6 +20,121 @@ def is_normal(data, alpha=0.05, return_stats=False):
     if return_stats:
         return result
     return pvalue > alpha
+
+
+def auto_normality_test(n: int, r: float):
+    """
+    Recommend a normality test based on:
+      - n: sample size (int, >=3)
+      - r: ratio of outliers in [0, 1] (float), e.g., from a MAD-based detector.
+
+    Heuristics used
+    ----------------
+    - If outliers are present, prefer tail-sensitive (Anderson-Darling) at small n,
+      and skew/kurtosis-based (D'Agostino K^2) once n is comfortably large.
+    - With negligible outliers, Shapiro–Wilk is generally most powerful for small
+      to moderate n; for very large n switch to Jarque-Bera for speed/tractability.
+
+    Implementation details / guardrails
+    -----------------------------------
+    - SciPy's normaltest (D'Agostino) is best used for n >= 20.
+    - SciPy's shapiro warns that p-values may be inaccurate for n > 5000.
+    - Anderson-Darling in SciPy returns critical values (not a p-value).
+    """
+    # ----- validation -----
+    # refuse bools (since bool is subclass of int), non-integers, or tiny n
+    if isinstance(n, bool) or not isinstance(n, int):
+        raise ValueError("n must be a plain integer (e.g., 37).")
+    if n < 3:
+        raise ValueError("n must be >= 3.")
+
+    # coerce r to float and validate finite & bounded
+    try:
+        r = float(r)
+    except Exception as _:
+        raise ValueError("r must be a float in [0, 1].")
+    if not isfinite(r):
+        raise ValueError("r must be finite.")
+    # small numeric drift safety: clamp to [0,1]
+    if r < 0.0:
+        r = 0.0
+    if r > 1.0:
+        r = 1.0
+
+    # ----- thresholds (tweak if your domain suggests different cutoffs) -----
+    MANY_OUTLIERS = 0.10  # >=10% flagged by MAD
+    SOME_OUTLIERS = 0.01  # 1%–10%
+
+    MIN_N_K2 = 20  # safety for D'Agostino's K^2
+    SMALL_N_AD = 50  # below this with outliers -> AD
+    MED_N_AD = 200  # "many outliers" still AD if <200
+    LARGE_N_SWITCH = 5000  # above this -> consider JB or AD (no p) for tails
+
+    def pack(test, alias, why, scipy_call, notes=None, min_n=None, pvalue=True):
+        return {
+            "test": test,
+            "alias": alias,  # common SciPy function name
+            "why": why,  # one-line rationale
+            "scipy_call": scipy_call,  # copy-paste hint
+            "supports_pvalue": pvalue,  # AD in SciPy has no p-value
+            "min_n": min_n,
+            "notes": notes or "",
+        }
+
+    # ----- decision logic -----
+    if n >= LARGE_N_SWITCH:
+        return pack(
+            test="Jarque-Bera",
+            alias="jarque_bera",
+            why="Very large n with outliers; JB is fast and asymptotically efficient for skew/kurt deviations.",
+            scipy_call="from scipy import stats\njb, p = stats.jarque_bera(x)",
+        )
+    elif r >= MANY_OUTLIERS:
+        if n < MED_N_AD:
+            return pack(
+                test="Anderson-Darling (normal)",
+                alias="anderson",
+                why="Many outliers and small/medium n; AD is tail-sensitive.",
+                scipy_call="from scipy import stats\nstat, crit, sig = stats.anderson(x, dist='norm')",
+                notes="Interpret using critical values; SciPy does not return a p-value.",
+                pvalue=False,
+            )
+        else:
+            # prefer K^2 if n is safe; otherwise fall back to AD
+            return pack(
+                test="D'Agostino K^2",
+                alias="normaltest",
+                why="Outliers inflate skew/kurtosis; K^2 has good power at medium/large n.",
+                scipy_call="from scipy import stats\nk2, p = stats.normaltest(x, nan_policy='omit')",
+                min_n=MIN_N_K2,
+            )
+    elif r >= SOME_OUTLIERS:
+        if n < SMALL_N_AD:
+            return pack(
+                test="Anderson-Darling (normal)",
+                alias="anderson",
+                why="n too small for K^2; AD emphasizes tails.",
+                scipy_call="from scipy import stats\nstat, crit, sig = stats.anderson(x, dist='norm')",
+                pvalue=False,
+            )
+        else:
+            return pack(
+                test="D'Agostino K^2",
+                alias="normaltest",
+                why="Moderate n with some outliers; K^2 targets skewness/kurtosis.",
+                scipy_call="from scipy import stats\nk2, p = stats.normaltest(x, nan_policy='omit')",
+                min_n=MIN_N_K2,
+            )
+    else:
+        # negligible outliers
+        # Shapiro–Wilk up to ~5000 (SciPy warns on p for larger n)
+        return pack(
+            test="Shapiro–Wilk",
+            alias="shapiro",
+            why="Clean data; Shapiro is typically most powerful for small–moderate n.",
+            scipy_call="from scipy import stats\nw, p = stats.shapiro(x)",
+            notes="For n > 5000 the p-value accuracy may degrade in SciPy.",
+        )
 
 
 def check_multimodality(data, max_components=5, alpha=0.05, verbose=True):
@@ -77,31 +194,29 @@ def check_multimodality(data, max_components=5, alpha=0.05, verbose=True):
         if best_k_aic > 1:
             if verbose:
                 print("-" * 50)
-                print(
-                    f"✗ STRONG evidence of MULTIMODALITY ({best_k_bic} components)"
-                )
-                print("=" * 56, '\n')
+                print(f"✗ STRONG evidence of MULTIMODALITY ({best_k_bic} components)")
+                print("=" * 56, "\n")
         else:
             if verbose:
                 print("-" * 50)
                 print(
                     f"✗ MODERATE evidence of MULTIMODALITY ({best_k_bic} components).Check histogram"
                 )
-                print("=" * 56, '\n')
+                print("=" * 56, "\n")
     else:
         results["is_unimodal"] = True
         if verbose:
             print("-" * 50)
             print("✓ Data appear UNIMODAL (1 component)")
-            print("=" * 56, '\n')
+            print("=" * 56, "\n")
 
     results["best_k_bic"] = best_k_bic
     results["best_k_aic"] = best_k_aic
     results["bics"] = bics
     results["aics"] = aics
     results["best_gmm"] = models[best_k_bic - 1]
-    
-    return results['is_unimodal']
+
+    return results["is_unimodal"]
 
 
 def global_outliers(data, need_formal=False):
@@ -138,7 +253,7 @@ def global_outliers(data, need_formal=False):
     else:
         method1 = "IQR"
         method2 = None
-    methods = filter(lambda m: m is not None , [method1, method2, method3])
+    methods = filter(lambda m: m is not None, [method1, method2, method3])
     return tuple(methods)
 
 
