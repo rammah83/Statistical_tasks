@@ -1,5 +1,6 @@
 from math import isfinite
 import numpy as np
+import pingouin as pg
 import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.stats as stats
@@ -22,7 +23,7 @@ def is_normal(data, alpha=0.05, return_stats=False):
     return pvalue > alpha
 
 
-def auto_normality_test(n: int, r: float):
+def recommand_normality_test(n: int, r: float = 0.0):
     """
     Recommend a normality test based on:
       - n: sample size (int, >=3)
@@ -137,6 +138,44 @@ def auto_normality_test(n: int, r: float):
         )
 
 
+def recommand_outliers_test(data, need_formal=False):
+    method1, method2, method3 = None, None, None
+    x = _clean_data(data)
+    n = len(x)
+    normality = is_normal(x, return_stats=False)
+    if n < 30:
+        if normality:
+            method1 = "Dixon"
+            method2 = "Grubb"
+        else:
+            method1 = "IQR"
+            method2 = "Percentile"
+
+    elif 30 <= n < 300:
+        if normality:
+            if need_formal:
+                method1 = "Grubb" if "ONE_OUTLIER" else "Generalized ESD"
+            else:
+                method1 = "z-score"
+        elif abs(stats.skew(x)) >= 1:
+            method1 = "Modified z-score"
+            method2 = "Median +/- MAD"
+            method3 = "Percentile:1-99"
+
+        elif abs(stats.skew(x)) < 0.5:
+            method1 = "IQR"
+            method2 = "Percentile:1-99"
+        else:
+            method1 = "Modified z-score"
+            method2 = "IQR"
+            method3 = "Percentile:5-95"
+    else:
+        method1 = "IQR"
+        method2 = None
+    methods = filter(lambda m: m is not None, [method1, method2, method3])
+    return tuple(methods)
+
+
 def check_multimodality(data, max_components=5, alpha=0.05, verbose=True):
     """
     Check for multimodality in a single numeric variable.
@@ -219,55 +258,20 @@ def check_multimodality(data, max_components=5, alpha=0.05, verbose=True):
     return results["is_unimodal"]
 
 
-def global_outliers(data, need_formal=False):
-    method1, method2, method3 = None, None, None
-    x = _clean_data(data)
-    n = len(x)
-    normality = is_normal(x, return_stats=False)
-    if n < 30:
-        if normality:
-            method1 = "Dixon"
-            method2 = "Grubb"
-        else:
-            method1 = "IQR"
-            method2 = "Percentile"
-
-    elif 30 <= n < 300:
-        if normality:
-            if need_formal:
-                method1 = "Grubb" if "ONE_OUTLIER" else "Generalized ESD"
-            else:
-                method1 = "z-score"
-        elif abs(stats.skew(x)) >= 1:
-            method1 = "Modified z-score"
-            method2 = "Median +/- MAD"
-            method3 = "Percentile:1-99"
-
-        elif abs(stats.skew(x)) < 0.5:
-            method1 = "IQR"
-            method2 = "Percentile:1-99"
-        else:
-            method1 = "Modified z-score"
-            method2 = "IQR"
-            method3 = "Percentile:5-95"
-    else:
-        method1 = "IQR"
-        method2 = None
-    methods = filter(lambda m: m is not None, [method1, method2, method3])
-    return tuple(methods)
-
-
 if __name__ == "__main__":
     np.random.seed(42)
     data = np.random.normal(10, 2, 5000)
     # Example 2: Bimodal data
-    bimodal_data = np.concatenate(
+    data = np.concatenate(
         [
-            np.random.normal(loc=30, scale=5, size=500),
-            np.random.normal(loc=70, scale=5, size=500),
+            np.random.normal(loc=70, scale=5, size=200),
+            np.random.normal(loc=30, scale=5, size=200),
         ]
     )
+
+    n = len(data)
+    print(f"{recommand_normality_test(n)['test']}")
     print(f"Is Normal: {is_normal(data, return_stats=False)}")
-    print(f"Outliers Methods : {global_outliers(data)}")
+    print(f"Outliers Methods : {recommand_outliers_test(data)}")
     results = check_multimodality(data, verbose=False)
     print(f"Unimodality: {results}")
