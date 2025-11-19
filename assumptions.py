@@ -13,17 +13,46 @@ def _clean_data(data):
     return x[~np.isnan(x)]
 
 
-def is_normal(data, alpha=0.05, return_stats=False):
+def is_normal(data, method="shapiro", alpha=0.05, return_stats=False):
     # Convert to numpy array and remove NaNs
     x = _clean_data(data)
-    result = stats.shapiro(x)
-    pvalue = result.pvalue
+    match method:
+        case "shapiro":
+            result = stats.shapiro(x)
+        case "jarque_bera":
+            result = stats.jarque_bera(x)
+        case "normaltest":
+            result = stats.normaltest(x, nan_policy="omit")
+        case "kolmogorov":
+            result = stats.kstest(x, "norm", args=(x.mean(), x.std()))
+        case "anderson":
+            res = stats.anderson(x, dist="norm")
+            A2 = float(res.statistic)
+            sl = np.asarray(
+                res.significance_level, dtype=float
+            )  # e.g., [15., 10., 5., 2.5, 1.]
+            cv = np.asarray(res.critical_values, dtype=float)
+            target = alpha * 100.0
+            idx = int(np.argmin(np.abs(sl - target)))
+            crit = float(cv[idx])
+            alpha_used = float(sl[idx] / 100.0)
+            result = {
+                    "A2": A2,
+                    "crit": crit,
+                    "alpha_used": alpha_used,
+                    "pvalue": np.nan,
+                    "normal": bool(A2 < crit),
+                }
+            return result['normal'] if not return_stats else result
+        case _:
+            result = stats.shapiro(x)
     if return_stats:
         return result
-    return pvalue > alpha
+    pvalue = result.pvalue
+    return bool(isfinite(pvalue) and pvalue > alpha)
 
 
-def recommand_normality_test(n: int, r: float = 0.0):
+def recommand_normality_test(n: int, percent_outlier: float = 0.0):
     """
     Recommend a normality test based on:
       - n: sample size (int, >=3)
@@ -33,7 +62,7 @@ def recommand_normality_test(n: int, r: float = 0.0):
     ----------------
     - If outliers are present, prefer tail-sensitive (Anderson-Darling) at small n,
       and skew/kurtosis-based (D'Agostino K^2) once n is comfortably large.
-    - With negligible outliers, Shapiro–Wilk is generally most powerful for small
+    - With negligible outliers, Shapiro-Wilk is generally most powerful for small
       to moderate n; for very large n switch to Jarque-Bera for speed/tractability.
 
     Implementation details / guardrails
@@ -51,20 +80,20 @@ def recommand_normality_test(n: int, r: float = 0.0):
 
     # coerce r to float and validate finite & bounded
     try:
-        r = float(r)
+        percent_outlier = float(percent_outlier)
     except Exception as _:
         raise ValueError("r must be a float in [0, 1].")
-    if not isfinite(r):
+    if not isfinite(percent_outlier):
         raise ValueError("r must be finite.")
     # small numeric drift safety: clamp to [0,1]
-    if r < 0.0:
-        r = 0.0
-    if r > 1.0:
-        r = 1.0
+    if percent_outlier < 0.0:
+        percent_outlier = 0.0
+    if percent_outlier > 100.0:
+        percent_outlier = 100.0
 
     # ----- thresholds (tweak if your domain suggests different cutoffs) -----
-    MANY_OUTLIERS = 0.10  # >=10% flagged by MAD
-    SOME_OUTLIERS = 0.01  # 1%–10%
+    MANY_OUTLIERS = 10  # >=10% flagged by MAD
+    SOME_OUTLIERS = 1  # 1%–10%
 
     MIN_N_K2 = 20  # safety for D'Agostino's K^2
     SMALL_N_AD = 50  # below this with outliers -> AD
@@ -90,7 +119,7 @@ def recommand_normality_test(n: int, r: float = 0.0):
             why="Very large n with outliers; JB is fast and asymptotically efficient for skew/kurt deviations.",
             scipy_call="from scipy import stats\njb, p = stats.jarque_bera(x)",
         )
-    elif r >= MANY_OUTLIERS:
+    elif percent_outlier >= MANY_OUTLIERS:
         if n < MED_N_AD:
             return pack(
                 test="Anderson-Darling (normal)",
@@ -109,7 +138,7 @@ def recommand_normality_test(n: int, r: float = 0.0):
                 scipy_call="from scipy import stats\nk2, p = stats.normaltest(x, nan_policy='omit')",
                 min_n=MIN_N_K2,
             )
-    elif r >= SOME_OUTLIERS:
+    elif percent_outlier >= SOME_OUTLIERS:
         if n < SMALL_N_AD:
             return pack(
                 test="Anderson-Darling (normal)",
@@ -128,9 +157,9 @@ def recommand_normality_test(n: int, r: float = 0.0):
             )
     else:
         # negligible outliers
-        # Shapiro–Wilk up to ~5000 (SciPy warns on p for larger n)
+        # Shapiro-Wilk up to ~5000 (SciPy warns on p for larger n)
         return pack(
-            test="Shapiro–Wilk",
+            test="Shapiro-Wilk",
             alias="shapiro",
             why="Clean data; Shapiro is typically most powerful for small–moderate n.",
             scipy_call="from scipy import stats\nw, p = stats.shapiro(x)",
@@ -138,11 +167,10 @@ def recommand_normality_test(n: int, r: float = 0.0):
         )
 
 
-def recommand_outliers_test(data, need_formal=False):
+def recommand_outliers_test(data, normality, need_formal=False):
     method1, method2, method3 = None, None, None
     x = _clean_data(data)
     n = len(x)
-    normality = is_normal(x, return_stats=False)
     if n < 30:
         if normality:
             method1 = "Dixon"
@@ -176,7 +204,7 @@ def recommand_outliers_test(data, need_formal=False):
     return tuple(methods)
 
 
-def check_multimodality(data, max_components=5, alpha=0.05, verbose=True):
+def check_multimodality(data, max_components=5, alpha=0.01, verbose=True):
     """
     Check for multimodality in a single numeric variable.
 
@@ -260,18 +288,21 @@ def check_multimodality(data, max_components=5, alpha=0.05, verbose=True):
 
 if __name__ == "__main__":
     np.random.seed(42)
-    data = np.random.normal(10, 2, 5000)
+    data = np.random.normal(10, 2, 59)
     # Example 2: Bimodal data
     data = np.concatenate(
         [
             np.random.normal(loc=70, scale=5, size=200),
-            np.random.normal(loc=30, scale=5, size=200),
+            np.random.normal(loc=30, scale=5, size=300),
         ]
     )
 
     n = len(data)
-    print(f"{recommand_normality_test(n)['test']}")
-    print(f"Is Normal: {is_normal(data, return_stats=False)}")
-    print(f"Outliers Methods : {recommand_outliers_test(data)}")
-    results = check_multimodality(data, verbose=False)
-    print(f"Unimodality: {results}")
+    method = recommand_normality_test(n, percent_outlier=2.0)['alias']
+    normality = is_normal(data, method=method, return_stats=False)
+    unimodality = check_multimodality(data, verbose=False)
+    outlier_test_method = recommand_outliers_test(data, normality)
+    print(f"Normality test '{method}':\n\t{is_normal(data, method=method, return_stats=True)}")
+    print(f"Is Normal: {is_normal(data, method=method, return_stats=False)}")
+    print(f"Outliers Methods : {outlier_test_method}")
+    print(f"Unimodality: {unimodality}")
