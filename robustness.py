@@ -1,4 +1,3 @@
-import time
 import numpy as np
 import scipy.stats as stats
 import pingouin as pg
@@ -26,7 +25,7 @@ def recommand_outliers_test(
     z_score = "z-score"
     modified_z_score = "Modified z-score"
     generalised_esd = "Generalized ESD"
-    median_mad = "Median +/- MAD"
+    median_kmad = "Median +/-k MAD"
     percentile_1_99 = "Percentile:1-99"
     percentile_5_95 = "Percentile:5-95"
     lof = "LOF"
@@ -47,8 +46,11 @@ def recommand_outliers_test(
     else:
         if n < 30:
             if normality:
-                method1 = dixon
-                method2 = grubb
+                if one_outlier:
+                    method1 = dixon
+                    method2 = grubb
+                else:
+                    method1 = generalised_esd
             else:
                 method1 = iqr
                 method2 = percentile
@@ -59,14 +61,15 @@ def recommand_outliers_test(
                     method1 = grubb if one_outlier else generalised_esd
                 else:
                     method1 = z_score
+                    method2 = iqr
             elif abs(stats.skew(x)) >= 1:
                 method1 = modified_z_score
-                method2 = median_mad
+                method2 = median_kmad
                 method3 = percentile_1_99
 
             elif abs(stats.skew(x)) < 0.5:
                 method1 = iqr
-                method2 = percentile
+                method2 = percentile_1_99
             else:
                 method1 = modified_z_score
                 method2 = iqr
