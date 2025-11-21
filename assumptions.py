@@ -5,51 +5,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.stats as stats
 import seaborn as sns
+from sklearn.cluster import DBSCAN
+from sklearn.ensemble import IsolationForest
 from sklearn.mixture import GaussianMixture
+from sklearn.neighbors import LocalOutlierFactor
 
 
 def _clean_data(data):
-    x = np.array(data).flatten()
+    x = np.array(data, dtype=float).flatten()
     return x[~np.isnan(x)]
-
-
-def is_normal(data, method="shapiro", alpha=0.05, return_stats=False):
-    # Convert to numpy array and remove NaNs
-    x = _clean_data(data)
-    match method:
-        case "shapiro":
-            result = stats.shapiro(x)
-        case "jarque_bera":
-            result = stats.jarque_bera(x)
-        case "normaltest":
-            result = stats.normaltest(x, nan_policy="omit")
-        case "kolmogorov":
-            result = stats.kstest(x, "norm", args=(x.mean(), x.std()))
-        case "anderson":
-            res = stats.anderson(x, dist="norm")
-            A2 = float(res.statistic)
-            sl = np.asarray(
-                res.significance_level, dtype=float
-            )  # e.g., [15., 10., 5., 2.5, 1.]
-            cv = np.asarray(res.critical_values, dtype=float)
-            target = alpha * 100.0
-            idx = int(np.argmin(np.abs(sl - target)))
-            crit = float(cv[idx])
-            alpha_used = float(sl[idx] / 100.0)
-            result = {
-                    "A2": A2,
-                    "crit": crit,
-                    "alpha_used": alpha_used,
-                    "pvalue": np.nan,
-                    "normal": bool(A2 < crit),
-                }
-            return result['normal'] if not return_stats else result
-        case _:
-            result = stats.shapiro(x)
-    if return_stats:
-        return result
-    pvalue = result.pvalue
-    return bool(isfinite(pvalue) and pvalue > alpha)
 
 
 def recommand_normality_test(n: int, percent_outlier: float = 0.0):
@@ -167,41 +131,44 @@ def recommand_normality_test(n: int, percent_outlier: float = 0.0):
         )
 
 
-def recommand_outliers_test(data, normality, need_formal=False):
-    method1, method2, method3 = None, None, None
+def check_normality(data, method="shapiro", alpha=0.05, return_stats=False):
+    # Convert to numpy array and remove NaNs
     x = _clean_data(data)
-    n = len(x)
-    if n < 30:
-        if normality:
-            method1 = "Dixon"
-            method2 = "Grubb"
-        else:
-            method1 = "IQR"
-            method2 = "Percentile"
+    match method:
+        case "shapiro":
+            result = stats.shapiro(x)
+        case "jarque_bera":
+            result = stats.jarque_bera(x)
+        case "normaltest":
+            result = stats.normaltest(x, nan_policy="omit")
+        case "kolmogorov":
+            result = stats.kstest(x, "norm", args=(x.mean(), x.std()))
+        case "anderson":
+            res = stats.anderson(x, dist="norm")
+            A2 = float(res.statistic)
+            sl = np.asarray(
+                res.significance_level, dtype=float
+            )  # e.g., [15., 10., 5., 2.5, 1.]
+            cv = np.asarray(res.critical_values, dtype=float)
+            target = alpha * 100.0
+            idx = int(np.argmin(np.abs(sl - target)))
+            crit = float(cv[idx])
+            alpha_used = float(sl[idx] / 100.0)
+            result = {
+                "A2": A2,
+                "crit": crit,
+                "alpha_used": alpha_used,
+                "pvalue": np.nan,
+                "normal": bool(A2 < crit),
+            }
+            return result["normal"] if not return_stats else result
+        case _:
+            result = stats.shapiro(x)
+    if return_stats:
+        return result
+    pvalue = result.pvalue
+    return bool(isfinite(pvalue) and pvalue > alpha)
 
-    elif 30 <= n < 300:
-        if normality:
-            if need_formal:
-                method1 = "Grubb" if "ONE_OUTLIER" else "Generalized ESD"
-            else:
-                method1 = "z-score"
-        elif abs(stats.skew(x)) >= 1:
-            method1 = "Modified z-score"
-            method2 = "Median +/- MAD"
-            method3 = "Percentile:1-99"
-
-        elif abs(stats.skew(x)) < 0.5:
-            method1 = "IQR"
-            method2 = "Percentile:1-99"
-        else:
-            method1 = "Modified z-score"
-            method2 = "IQR"
-            method3 = "Percentile:5-95"
-    else:
-        method1 = "IQR"
-        method2 = None
-    methods = filter(lambda m: m is not None, [method1, method2, method3])
-    return tuple(methods)
 
 
 def check_multimodality(data, max_components=5, alpha=0.01, verbose=True):
@@ -285,6 +252,8 @@ def check_multimodality(data, max_components=5, alpha=0.01, verbose=True):
 
     return results["is_unimodal"]
 
+    
+
 
 if __name__ == "__main__":
     np.random.seed(42)
@@ -298,11 +267,14 @@ if __name__ == "__main__":
     )
 
     n = len(data)
-    method = recommand_normality_test(n, percent_outlier=2.0)['alias']
-    normality = is_normal(data, method=method, return_stats=False)
+    method = recommand_normality_test(n, percent_outlier=2.0)["alias"]
+    normality = check_normality(data, method=method, return_stats=False)
     unimodality = check_multimodality(data, verbose=False)
-    outlier_test_method = recommand_outliers_test(data, normality)
-    print(f"Normality test '{method}':\n\t{is_normal(data, method=method, return_stats=True)}")
-    print(f"Is Normal: {is_normal(data, method=method, return_stats=False)}")
+    outlier_test_method = recommand_outliers_test(data, normality, unimodal=unimodality)
+    print("=" * 56)
+    print(f"Normality test '{method}':")
+    print(f"\t{check_normality(data, method=method, return_stats=True)}")
+    print(f"Distribution: {'Normal' if check_normality(data, method=method, return_stats=False) else 'Not Normal'}")
+    print("=" * 56)
     print(f"Outliers Methods : {outlier_test_method}")
     print(f"Unimodality: {unimodality}")
