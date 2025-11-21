@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import scipy.stats as stats
 import pingouin as pg
@@ -103,7 +104,7 @@ def iqr_method(X, k=1.5):
     return _format_result(X, is_outlier)
 
 
-def z_score_method(X, threshold=2): #  (2, 3) are common choices
+def z_score_method(X, threshold=2):  #  (2, 3) are common choices
     """Standard Z-Score Method."""
     if len(X) < 2:
         return _format_result(X, np.zeros(len(X), dtype=bool))
@@ -114,24 +115,21 @@ def z_score_method(X, threshold=2): #  (2, 3) are common choices
     if std == 0:
         z_scores = np.zeros(len(X))
     else:
-        z_scores = (X - mean) / std # alternative : stats.zscore
+        z_scores = (X - mean) / std  # alternative : stats.zscore
     is_outlier = np.abs(z_scores) > threshold
     return _format_result(X, is_outlier)
 
-def madmedianrule_method(X):
+
+def modified_z_score_method(
+    X, q_threshold=0.975
+):  # Common thresholds: 2.24 (95%), 3.5 (99%)
     """
-    Outlier detection based on the MADmedianrule, often used in robust statistics.
+    Modified Z-Score using Median and MAD.
+    Outlier detection based on the MAD Median Rule, often used in robust statistics.
     This method identifies outliers as points that deviate significantly from the median,
     scaled by the Median Absolute Deviation (MAD).
+    it's same as using pg.madmedianrule(X)
     """
-    if len(X) == 0:
-        return _format_result(X, np.array([], dtype=bool))
-
-    is_outlier = pg.madmedianrule(X)
-    return _format_result(X, is_outlier)
-    
-def modified_z_score_method(X, threshold=2.24): # Common thresholds: 2.24 (95%), 3.5 (99%)
-    """Modified Z-Score using Median and MAD."""
     if len(X) == 0:
         return _format_result(X, np.array([], dtype=bool))
 
@@ -146,13 +144,16 @@ def modified_z_score_method(X, threshold=2.24): # Common thresholds: 2.24 (95%),
         is_outlier = X != median
     else:
         # 0.6745 is the consistency constant for normal distribution
-        modified_z = 0.6745 * (X - median) / mad
+        modified_z = stats.norm.ppf(3 / 4.0) * (X - median) / mad
+        chi2_value = stats.chi2.ppf(q=q_threshold, df=1)
+        threshold = np.sqrt(chi2_value)
         is_outlier = np.abs(modified_z) > threshold
-
     return _format_result(X, is_outlier)
 
 
-def percentile_method(X, lower_percentile=1, upper_percentile=99): # 1, 5 and 95, 99 are common choices
+def percentile_method(
+    X, lower_percentile=1, upper_percentile=99
+):  # 1, 5 and 95, 99 are common choices
     """Percentile Method."""
     if len(X) == 0:
         return _format_result(X, np.array([], dtype=bool))
@@ -164,7 +165,7 @@ def percentile_method(X, lower_percentile=1, upper_percentile=99): # 1, 5 and 95
     return _format_result(X, is_outlier)
 
 
-def mad_method(X, k=3): # 3 is a common choice
+def mad_method(X, k=3):  # 3 is a common choice
     """Median +/- k * MAD Method."""
     if len(X) == 0:
         return _format_result(X, np.array([], dtype=bool))
@@ -369,7 +370,9 @@ def isoforest_test(X, contamination="auto", random_state=42):
 
     X_reshaped = X.reshape(-1, 1)
 
-    clf = IsolationForest(n_estimators=500, contamination=contamination, random_state=random_state)
+    clf = IsolationForest(
+        n_estimators=500, contamination=contamination, random_state=random_state
+    )
     y_pred = clf.fit_predict(X_reshaped)
 
     is_outlier = y_pred == -1
@@ -419,7 +422,7 @@ def outliers_info(data, method, return_outliers=False):
         case "Modified z-score":
             results = modified_z_score_method(X)
         case "MADmedianrule":
-            results = madmedianrule_method(X)
+            results = modified_z_score_method(X)
         case "generalized ESD":
             results = generalized_esd_test(X)
         case "Median +/- k MAD":
@@ -451,8 +454,19 @@ if __name__ == "__main__":
             np.random.normal(loc=30, scale=10, size=300),
         ]
     )
-    data3 = [-1.09, 1., 0.28, -1.51, -0.58, 6.61, -2.43, -0.43, -5.24, 0.19,]
-    
+    data3 = [
+        -1.09,
+        1.0,
+        0.28,
+        -1.51,
+        -0.58,
+        6.61,
+        -2.43,
+        -0.43,
+        -5.24,
+        0.19,
+    ]
+
     robustness_methods = [
         "Dixon",
         "Grubb",
@@ -471,8 +485,8 @@ if __name__ == "__main__":
     print("=" * 56)
     print(f"{'Method/Test':<25} {'N outliers':>5}")
     print("-" * 50)
-    for method in robustness_methods:
-        robustness_result = outliers_info(data3, method=method)
+    for method in robustness_methods[:]:
+        robustness_result = outliers_info(data1, method=method)
         print(f"{method:<25} {robustness_result['n_outliers'] * 1:>5}")
     print("-" * 50)
     print("=" * 56)
