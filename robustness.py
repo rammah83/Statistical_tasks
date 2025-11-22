@@ -10,7 +10,7 @@ from assumptions import _clean_data
 
 
 def recommand_outliers_test(
-    data, normality, unimodal=True, need_formal=False, one_outlier=False
+    n, normality, unimodal=True, need_formal=False, one_outlier=False
 ):
     """
     Recommend an outlier test based on:
@@ -33,8 +33,6 @@ def recommand_outliers_test(
     isolation_forest = "Isolation Forest"
 
     method1, method2, method3 = None, None, None
-    x = _clean_data(data)
-    n = len(x)
     if not unimodal:
         if n <= 10_000:
             method1 = lof
