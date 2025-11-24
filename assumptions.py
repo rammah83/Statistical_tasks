@@ -171,7 +171,7 @@ def check_normality(data, method="shapiro", alpha=0.05, return_stats=False):
 
 
 
-def check_multimodality(data, max_components=5, alpha=0.01, verbose=True):
+def check_multimodality(data, max_components=5, alpha=0.01, return_k=False, verbose=True):
     """
     Check for multimodality in a single numeric variable.
 
@@ -250,7 +250,7 @@ def check_multimodality(data, max_components=5, alpha=0.01, verbose=True):
     results["aics"] = aics
     results["best_gmm"] = models[best_k_bic - 1]
 
-    return results["is_unimodal"]
+    return results["is_unimodal"], results["best_k_bic"]
 
     
 
