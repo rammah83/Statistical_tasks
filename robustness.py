@@ -96,7 +96,7 @@ def _format_result(X, is_outlier):
     }
 
 
-def iqr_method(X, k=1.5):
+def iqr_method(X, k=1.5 * 2):
     """Interquartile Range Method."""
     if len(X) == 0:
         return _format_result(X, np.array([], dtype=bool))
