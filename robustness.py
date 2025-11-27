@@ -10,7 +10,7 @@ from assumptions import _clean_data
 
 
 def recommand_outliers_test(
-    n, normality, unimodal=True, need_formal=False, one_outlier=False
+    x, normality, unimodal=True, need_formal=False, one_outlier=False
 ):
     """
     Recommend an outlier test based on:
@@ -32,6 +32,7 @@ def recommand_outliers_test(
     dbscan = "DBSCAN"
     isolation_forest = "Isolation Forest"
 
+    n = len(x)
     method1, method2, method3 = None, None, None
     if not unimodal:
         if n <= 10_000:
@@ -66,8 +67,13 @@ def recommand_outliers_test(
                 method3 = percentile_1_99
 
             elif abs(stats.skew(x)) < 0.5:
-                method1 = iqr
-                method2 = percentile_1_99
+                # If data is heavy-tailed (Leptokurtic), standard deviation is not reliable
+                if stats.kurtosis(x) > 1.0:
+                    method1 = modified_z_score
+                    method2 = median_kmad
+                else:
+                    method1 = iqr
+                    method2 = percentile_1_99
             else:
                 method1 = modified_z_score
                 method2 = iqr

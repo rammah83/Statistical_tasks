@@ -170,8 +170,9 @@ def check_normality(data, method="shapiro", alpha=0.05, return_stats=False):
     return bool(isfinite(pvalue) and pvalue > alpha)
 
 
-
-def check_multimodality(data, max_components=5, alpha=0.01, return_k=False, verbose=True):
+def check_multimodality(
+    data, max_components=5, alpha=0.01, return_k=False, verbose=True
+):
     """
     Check for multimodality in a single numeric variable.
 
@@ -250,9 +251,7 @@ def check_multimodality(data, max_components=5, alpha=0.01, return_k=False, verb
     results["aics"] = aics
     results["best_gmm"] = models[best_k_bic - 1]
 
-    return results["is_unimodal"], results["best_k_bic"]
-
-    
+    return results["is_unimodal"], int(results["best_k_bic"])
 
 
 if __name__ == "__main__":
@@ -274,7 +273,9 @@ if __name__ == "__main__":
     print("=" * 56)
     print(f"Normality test '{method}':")
     print(f"\t{check_normality(data, method=method, return_stats=True)}")
-    print(f"Distribution: {'Normal' if check_normality(data, method=method, return_stats=False) else 'Not Normal'}")
+    print(
+        f"Distribution: {'Normal' if check_normality(data, method=method, return_stats=False) else 'Not Normal'}"
+    )
     print("=" * 56)
     print(f"Outliers Methods : {outlier_test_method}")
     print(f"Unimodality: {unimodality}")
