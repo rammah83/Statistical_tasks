@@ -1,10 +1,13 @@
+from functools import lru_cache
 import numpy as np
+import pandas as pd
 import scipy.stats as stats
 import pingouin as pg
 from sklearn.cluster import DBSCAN
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.preprocessing import StandardScaler
+from loguru import logger
 
 from assumptions import _clean_data
 
@@ -450,6 +453,186 @@ def outliers_info(data, method, return_outliers=False):
         results.pop("outlier_mask", None)
     return results
 
+@lru_cache(maxsize=0)
+def univar_outliers_auto_threshold(
+    data: pd.DataFrame | pd.Series,
+    use_mad=False,
+    sigma_threshold: [str, float] = "auto",
+    robust_cutoff: [str, float] = "auto",
+    **kwargs,
+):
+    """
+    Count outliers using either standard z-scores or robust modified z-scores (MAD-based).
+
+    Parameters
+    ----------
+    data : array-like
+        1D iterable of numeric values.
+    threshold : float, default=3.0
+        Cutoff for |z|. For modified z-scores (use_mad=True), 3.5 is commonly used.
+    use_mad : bool, default=False
+        If True, use modified z-scores based on MAD; else use standard z-scores.
+        threshold : str or float, default='auto'
+                *Threshold recommendations*:
+                If you’re using standard z-scores (mean and standard deviation), a threshold of 3.0 is the classic “3-sigma rule.” Under a Normal model, about 0.27% of points exceed this two-sided threshold, so you’d expect roughly 0.27 false outliers per 100 points, 2.7 per 1,000, etc. If your sample is large or you want fewer false positives, raise the bar to 3.5–4.0 (3.5 ≈ 0.046% tails; 4.0 ≈ 0.0063%).
+                If you’re using MAD-based modified z-scores (robust to outliers), the most common default is threshold = 3.5 (Iglewicz & Hoaglin), and many practitioners use 3.5–4.5 depending on how conservative they want to be and how heavy-tailed the data are. For very large N, you may increase the threshold to keep the expected number of spurious flags small. A handy rule if you want at most about one false positive on average is to choose t so that:
+                §t = \phi^{-1}(1 - 1/(2*N))§
+                where N is the number of data points.
+                For example, N=1{,}000 gives t≈3.29; N=10{,}000 gives t≈3.89
+    Returns
+    -------
+    int
+        Number of outliers among finite values in `data`.
+    """
+    if len(data.shape) > 1:
+        outliers_stats_df = pd.DataFrame(
+            columns=[
+                "n",
+                "n_outliers",
+                "sigma_threshold",
+                "ratio_outliers",
+                "robust_cutoff",
+                "significant_outliers",
+            ]
+        )
+        for col in data.select_dtypes(include=[np.number]).columns:
+            outliers_stats_df.loc[col] = univar_outliers(
+                data[col],
+                use_mad=use_mad,
+                sigma_threshold=sigma_threshold,
+                robust_cutoff=robust_cutoff,
+            )
+        return outliers_stats_df.sort_values(by="ratio_outliers", ascending=False)
+
+    x = np.asarray(data, dtype=float)
+
+    # Keep only finite values (drop NaN/inf)
+    x = x[np.isfinite(x)]
+    n: int = x.size
+    if n <= 3:
+        return 0
+    if sigma_threshold is None or (
+        isinstance(sigma_threshold, str) and sigma_threshold.lower() == "auto"
+    ):
+        p_upper = 1.0 / (2.0 * n)
+        calculate_threshold = float(stats.norm.ppf(1 - p_upper))
+        if use_mad:
+            base_min, base_max = 3.5, 4.5
+        else:
+            base_min, base_max = 3.0, 4.0
+        sigma_threshold = min(base_max, max(base_min, calculate_threshold))
+    if use_mad:
+        median = np.median(x)
+        mad = np.median(np.abs(x - median))  # unscaled MAD
+        # mad = sm_mad(x, c=1.0, center=np.median)  # c=1.0 to get unscaled MAD
+        if mad == 0:
+            return {
+                "n": n,
+                "n_outliers": 0,
+                "sigma_threshold": sigma_threshold,
+                "ratio_outliers": 0,
+                "robust_cutoff": 0,
+                "significant_outliers": False,
+            }
+        z = (
+            stats.norm.ppf(3 / 4.0) * (x - median) / mad
+        )  # 0.6744897501960817 == stats.norm.ppf(0.75)
+    else:
+        # Standard z-score; constant arrays yield NaNs which won't be counted
+        z = stats.zscore(x, nan_policy="omit")
+    n_outliers = int(np.sum(np.abs(z) > sigma_threshold))
+    ratio_outliers = float(n_outliers) / n
+    if robust_cutoff is None or (
+        isinstance(robust_cutoff, str) and robust_cutoff.lower() == "auto"
+    ):
+        threshold_ratio_outliers = adaptive_rate_threshold(
+            n,
+            quantile=kwargs.get("quantile", 0.99),
+            coverage=kwargs.get("coverage", 0.95),
+        )
+    else:
+        threshold_ratio_outliers = robust_cutoff
+    return {
+        "n": n,
+        "n_outliers": n_outliers,
+        "sigma_threshold": sigma_threshold,
+        "ratio_outliers": ratio_outliers,
+        "robust_cutoff": threshold_ratio_outliers,
+        "significant_outliers": ratio_outliers > threshold_ratio_outliers,
+    }
+
+
+def adaptive_rate_threshold(n, quantile, coverage=0.95):
+    """95% one-sided upper bound for the outlier rate under the null."""
+    alpha = 1 - quantile
+    k95 = stats.binom.ppf(coverage, n, alpha)  # integer count
+    if n <= 0:
+        logger.warning("n is non-positive; returning NaN for adaptive rate threshold.")
+        return float("nan")  # Avoid division by zero
+    # logger.info(f"{n=}, {quantile=}, {coverage=}, {k95=}")
+    return float(k95 / n)
+
+
+def adaptive_quantile_and_rate_threshold(
+    n,
+    df=2,
+    expected_fp=1.0,
+    coverage=0.95,
+    min_quantile=0.95,
+    max_quantile=0.9995,
+):
+    """
+    Choose an adaptive chi-square quantile and a dataset-level outlier rate threshold.
+
+    Logic
+    -----
+    - Set quantile q so that alpha = 1 - q ≈ expected_fp / n, clipped to
+      [1 - max_quantile, 1 - min_quantile]. This keeps the expected number of
+      false positives near `expected_fp` under the null.
+    - Then compute a one-sided upper bound (at `coverage`, e.g. 95%) for the
+      outlier rate under Binomial(n, alpha) to use as `outlier_rate_threshold`.
+
+    Parameters
+    ----------
+    n : int
+        Number of used observations (after dropping NaNs/Infs).
+    df : int
+        Dimensionality for the chi-square reference (not used directly here; kept for API clarity).
+    expected_fp : float
+        Target expected number of false positives under the null (commonly 1.0).
+    coverage : float
+        One-sided confidence level for the rate threshold (e.g., 0.95).
+    min_quantile, max_quantile : float
+        Bounds to avoid too permissive or too strict cutoffs.
+
+    Returns
+    -------
+    (quantile, outlier_rate_threshold) : tuple of floats
+    """
+    # Ensure bounds are sensible
+    if max_quantile < min_quantile:
+        max_quantile, min_quantile = min_quantile, max_quantile
+
+    # Handle edge cases
+    if n is None or n <= 0:
+        q = max(min_quantile, min(max_quantile, 0.99))
+        # Safe default threshold with n=1 to avoid division by zero
+        rate_thr = adaptive_rate_threshold(1, q, coverage)
+        logger.warning(
+            f"n is non-positive ({n}); using default quantile {q} and rate threshold {rate_thr}."
+        )
+    else:
+        alpha_lower = 1.0 - max_quantile
+        alpha_upper = 1.0 - min_quantile
+
+        # Target alpha so that expected false positives ~ expected_fp
+        alpha_target = expected_fp / float(n)
+        alpha = min(max(alpha_target, alpha_lower), alpha_upper)
+
+        q = 1.0 - alpha
+        rate_thr = adaptive_rate_threshold(n, q, coverage)
+
+    return float(q), float(rate_thr)
 
 if __name__ == "__main__":
     np.random.seed(42)
