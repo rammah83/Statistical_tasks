@@ -9,7 +9,7 @@ from sklearn.neighbors import LocalOutlierFactor
 from sklearn.preprocessing import StandardScaler
 from loguru import logger
 
-from assumptions import _clean_data
+from dist_test import _clean_data
 
 
 def recommand_outliers_test(
@@ -41,10 +41,10 @@ def recommand_outliers_test(
         if n <= 10_000:
             method1 = lof
             method2 = dbscan
-            print("Multimodal data")
+            # print("Multimodal data")
         else:
             method1 = isolation_forest
-            print("Multimodal data")
+            # print("Multimodal data")
     else:
         if n < 30:
             if normality:
@@ -413,7 +413,7 @@ def dbscan_test(X, eps=0.5, min_samples=5):
 
 
 # Updated Wrapper Function
-def outliers_info(data, method, return_outliers=False):
+def outliers_by_method(data, method, return_outliers=False):
     X = _clean_data(data)
     match method:
         # --- Statistical Methods --- for global outliers
@@ -453,6 +453,80 @@ def outliers_info(data, method, return_outliers=False):
         results.pop("outlier_mask", None)
     return results
 
+
+def adaptive_rate_threshold(n, quantile, coverage=0.95):
+    """95% one-sided upper bound for the outlier rate under the null."""
+    alpha = 1 - quantile
+    k95 = stats.binom.ppf(coverage, n, alpha)  # integer count
+    if n <= 0:
+        logger.warning("n is non-positive; returning NaN for adaptive rate threshold.")
+        return float("nan")  # Avoid division by zero
+    # logger.info(f"{n=}, {quantile=}, {coverage=}, {k95=}")
+    return float(k95 / n)
+
+
+def adaptive_quantile_and_rate_threshold(
+    n,
+    df=2,
+    expected_fp=1.0,
+    coverage=0.95,
+    min_quantile=0.95,
+    max_quantile=0.9995,
+):
+    """
+    Choose an adaptive chi-square quantile and a dataset-level outlier rate threshold.
+
+    Logic
+    -----
+    - Set quantile q so that alpha = 1 - q ≈ expected_fp / n, clipped to
+      [1 - max_quantile, 1 - min_quantile]. This keeps the expected number of
+      false positives near `expected_fp` under the null.
+    - Then compute a one-sided upper bound (at `coverage`, e.g. 95%) for the
+      outlier rate under Binomial(n, alpha) to use as `outlier_rate_threshold`.
+
+    Parameters
+    ----------
+    n : int
+        Number of used observations (after dropping NaNs/Infs).
+    df : int
+        Dimensionality for the chi-square reference (not used directly here; kept for API clarity).
+    expected_fp : float
+        Target expected number of false positives under the null (commonly 1.0).
+    coverage : float
+        One-sided confidence level for the rate threshold (e.g., 0.95).
+    min_quantile, max_quantile : float
+        Bounds to avoid too permissive or too strict cutoffs.
+
+    Returns
+    -------
+    (quantile, outlier_rate_threshold) : tuple of floats
+    """
+    # Ensure bounds are sensible
+    if max_quantile < min_quantile:
+        max_quantile, min_quantile = min_quantile, max_quantile
+
+    # Handle edge cases
+    if n is None or n <= 0:
+        q = max(min_quantile, min(max_quantile, 0.99))
+        # Safe default threshold with n=1 to avoid division by zero
+        rate_thr = adaptive_rate_threshold(1, q, coverage)
+        logger.warning(
+            f"n is non-positive ({n}); using default quantile {q} and rate threshold {rate_thr}."
+        )
+    else:
+        alpha_lower = 1.0 - max_quantile
+        alpha_upper = 1.0 - min_quantile
+
+        # Target alpha so that expected false positives ~ expected_fp
+        alpha_target = expected_fp / float(n)
+        alpha = min(max(alpha_target, alpha_lower), alpha_upper)
+
+        q = 1.0 - alpha
+        rate_thr = adaptive_rate_threshold(n, q, coverage)
+
+    return float(q), float(rate_thr)
+
+
 @lru_cache(maxsize=0)
 def univar_outliers_auto_threshold(
     data: pd.DataFrame | pd.Series,
@@ -476,7 +550,7 @@ def univar_outliers_auto_threshold(
                 *Threshold recommendations*:
                 If you’re using standard z-scores (mean and standard deviation), a threshold of 3.0 is the classic “3-sigma rule.” Under a Normal model, about 0.27% of points exceed this two-sided threshold, so you’d expect roughly 0.27 false outliers per 100 points, 2.7 per 1,000, etc. If your sample is large or you want fewer false positives, raise the bar to 3.5–4.0 (3.5 ≈ 0.046% tails; 4.0 ≈ 0.0063%).
                 If you’re using MAD-based modified z-scores (robust to outliers), the most common default is threshold = 3.5 (Iglewicz & Hoaglin), and many practitioners use 3.5–4.5 depending on how conservative they want to be and how heavy-tailed the data are. For very large N, you may increase the threshold to keep the expected number of spurious flags small. A handy rule if you want at most about one false positive on average is to choose t so that:
-                §t = \phi^{-1}(1 - 1/(2*N))§
+                §t = $\phi^{-1}(1 - 1/(2*N))§
                 where N is the number of data points.
                 For example, N=1{,}000 gives t≈3.29; N=10{,}000 gives t≈3.89
     Returns
@@ -562,78 +636,6 @@ def univar_outliers_auto_threshold(
     }
 
 
-def adaptive_rate_threshold(n, quantile, coverage=0.95):
-    """95% one-sided upper bound for the outlier rate under the null."""
-    alpha = 1 - quantile
-    k95 = stats.binom.ppf(coverage, n, alpha)  # integer count
-    if n <= 0:
-        logger.warning("n is non-positive; returning NaN for adaptive rate threshold.")
-        return float("nan")  # Avoid division by zero
-    # logger.info(f"{n=}, {quantile=}, {coverage=}, {k95=}")
-    return float(k95 / n)
-
-
-def adaptive_quantile_and_rate_threshold(
-    n,
-    df=2,
-    expected_fp=1.0,
-    coverage=0.95,
-    min_quantile=0.95,
-    max_quantile=0.9995,
-):
-    """
-    Choose an adaptive chi-square quantile and a dataset-level outlier rate threshold.
-
-    Logic
-    -----
-    - Set quantile q so that alpha = 1 - q ≈ expected_fp / n, clipped to
-      [1 - max_quantile, 1 - min_quantile]. This keeps the expected number of
-      false positives near `expected_fp` under the null.
-    - Then compute a one-sided upper bound (at `coverage`, e.g. 95%) for the
-      outlier rate under Binomial(n, alpha) to use as `outlier_rate_threshold`.
-
-    Parameters
-    ----------
-    n : int
-        Number of used observations (after dropping NaNs/Infs).
-    df : int
-        Dimensionality for the chi-square reference (not used directly here; kept for API clarity).
-    expected_fp : float
-        Target expected number of false positives under the null (commonly 1.0).
-    coverage : float
-        One-sided confidence level for the rate threshold (e.g., 0.95).
-    min_quantile, max_quantile : float
-        Bounds to avoid too permissive or too strict cutoffs.
-
-    Returns
-    -------
-    (quantile, outlier_rate_threshold) : tuple of floats
-    """
-    # Ensure bounds are sensible
-    if max_quantile < min_quantile:
-        max_quantile, min_quantile = min_quantile, max_quantile
-
-    # Handle edge cases
-    if n is None or n <= 0:
-        q = max(min_quantile, min(max_quantile, 0.99))
-        # Safe default threshold with n=1 to avoid division by zero
-        rate_thr = adaptive_rate_threshold(1, q, coverage)
-        logger.warning(
-            f"n is non-positive ({n}); using default quantile {q} and rate threshold {rate_thr}."
-        )
-    else:
-        alpha_lower = 1.0 - max_quantile
-        alpha_upper = 1.0 - min_quantile
-
-        # Target alpha so that expected false positives ~ expected_fp
-        alpha_target = expected_fp / float(n)
-        alpha = min(max(alpha_target, alpha_lower), alpha_upper)
-
-        q = 1.0 - alpha
-        rate_thr = adaptive_rate_threshold(n, q, coverage)
-
-    return float(q), float(rate_thr)
-
 if __name__ == "__main__":
     np.random.seed(42)
     data1 = np.random.normal(10, 2, 10000)
@@ -676,7 +678,7 @@ if __name__ == "__main__":
     print(f"{'Method/Test':<25} {'N outliers':>5}")
     print("-" * 50)
     for method in robustness_methods[:]:
-        robustness_result = outliers_info(data1, method=method)
+        robustness_result = outliers_by_method(data1, method=method)
         print(f"{method:<25} {robustness_result['n_outliers'] * 1:>5}")
     print("-" * 50)
     print("=" * 56)
