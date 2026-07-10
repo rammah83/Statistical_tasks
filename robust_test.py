@@ -93,7 +93,7 @@ def _format_result(X, is_outlier):
     n_outliers = np.sum(is_outlier)
     return {
         "n_outliers": int(n_outliers),
-        "ratio_outliers": n_outliers / len(X) if len(X) > 0 else 0.0,
+        "ratio_outliers": float(n_outliers) / len(X) if len(X) > 0 else 0.0,
         "outlier_mask": is_outlier,
         "outlier_values": X[is_outlier],
     }
