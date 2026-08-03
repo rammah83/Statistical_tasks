@@ -144,24 +144,25 @@ def check_normality(data, method="shapiro", alpha=0.05, return_stats=False):
         case "kolmogorov":
             result = stats.kstest(x, "norm", args=(x.mean(), x.std()))
         case "anderson":
-            res = stats.anderson(x, dist="norm")
-            A2 = float(res.statistic)
-            sl = np.asarray(
-                res.significance_level, dtype=float
-            )  # e.g., [15., 10., 5., 2.5, 1.]
-            cv = np.asarray(res.critical_values, dtype=float)
-            target = alpha * 100.0
-            idx = int(np.argmin(np.abs(sl - target)))
-            crit = float(cv[idx])
-            alpha_used = float(sl[idx] / 100.0)
-            result = {
-                "A2": A2,
-                "crit": crit,
-                "alpha_used": alpha_used,
-                "pvalue": np.nan,
-                "normal": bool(A2 < crit),
-            }
-            return result["normal"] if not return_stats else result
+            result = stats.anderson(x, dist="norm", method='interpolate')
+            A2 = float(result.statistic)
+            # deprecated: since SciPy 1.19
+            # sl = np.asarray(
+            #     result.significance_level, dtype=float
+            # )  # e.g., [15., 10., 5., 2.5, 1.]
+            # cv = np.asarray(result.critical_values, dtype=float)
+            # target = alpha * 100.0
+            # idx = int(np.argmin(np.abs(sl - target)))
+            # crit = float(cv[idx])
+            # alpha_used = float(sl[idx] / 100.0)
+            # result = {
+            #     "A2": A2,
+            #     "crit": crit,
+            #     "alpha_used": alpha_used,
+            #     "pvalue": np.nan,
+            #     "normal": bool(A2 < crit),
+            # }
+            # return result["normal"] if not return_stats else result
         case _:
             result = stats.shapiro(x)
     if return_stats:
